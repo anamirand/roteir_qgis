@@ -1,0 +1,75 @@
+from qgis.core import (
+    QgsProject,
+    QgsFeature,
+    QgsGeometry,
+    QgsVectorLayer,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsDistanceArea,
+    QgsField
+)
+from qgis.utils import iface
+from PyQt5.QtCore import QVariant
+
+layer_pontos = QgsProject.instance().mapLayersByName('C.25_ATV.96.1_JD.LEBLON_PT.ENDE')
+layer_linhas = QgsProject.instance().mapLayersByName('IBGE_BH.LOGRADOURO')
+
+if not layer_pontos:
+    raise Exception("Camada de pontos 'C.25_ATV.96.1_JD.LEBLON_PT.ENDE' não encontrada.")
+if not layer_linhas:
+    raise Exception("Camada de linhas 'IBGE_BH.LOGRADOURO' não encontrada.")
+
+layer_pontos = layer_pontos[0]
+layer_linhas = layer_linhas[0]
+
+crs_sirg = QgsCoordinateReferenceSystem("EPSG:31983")
+
+pontos = []
+for ponto in layer_pontos.getFeatures():
+    ponto_geom = ponto.geometry()
+    pontos.append(ponto_geom.asPoint())
+
+camada_rota = QgsVectorLayer(f"LineString?crs=EPSG:31983", "Rota", "memory")
+camada_rota_pr = camada_rota.dataProvider()
+
+def calcular_distancia(p1, p2):
+    return QgsGeometry.fromPointXY(p1).distance(QgsGeometry.fromPointXY(p2))
+
+if pontos:
+    rota = [pontos[0]]
+    pontos_remanescentes = pontos[1:]
+
+    while pontos_remanescentes:
+        ultimo_ponto = rota[-1]
+        proximo_ponto = min(pontos_remanescentes, key=lambda p: calcular_distancia(ultimo_ponto, p))
+        rota.append(proximo_ponto)
+        pontos_remanescentes.remove(proximo_ponto)
+
+    linha_rota = QgsFeature()
+    rota_geom = QgsGeometry.fromPolylineXY(rota)
+    linha_rota.setGeometry(rota_geom)
+    camada_rota_pr.addFeature(linha_rota)
+
+QgsProject.instance().addMapLayer(camada_rota)
+
+# Ordenar os pontos e adicionar a sequência à camada original
+layer_pontos.startEditing()
+layer_pontos.dataProvider().addAttributes([QgsField("Sequencia", QVariant.Int)])  # Adicionar nova coluna
+layer_pontos.updateFields()
+
+# Criar um dicionário para mapear pontos a sequência
+sequencia_map = {punto: idx + 1 for idx, punto in enumerate(rota)}
+
+# Atribuir a sequência à nova coluna
+for feature in layer_pontos.getFeatures():
+    ponto_geom = feature.geometry().asPoint()
+    if ponto_geom in sequencia_map:
+        feature["Sequencia"] = sequencia_map[ponto_geom]
+        layer_pontos.updateFeature(feature)
+
+layer_pontos.commitChanges()
+
+iface.mapCanvas().setExtent(camada_rota.extent())
+iface.mapCanvas().refresh()
+
+print("Rota feita e sequência adicionada!")
